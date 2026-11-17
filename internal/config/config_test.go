@@ -23,7 +23,7 @@ func writeCfg(t *testing.T, dir, body string, mode os.FileMode) {
 }
 
 func TestInitAndRoundTrip(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "dbmeta")
+	dir := filepath.Join(t.TempDir(), ".dbmeta")
 	created, err := Init(dir)
 	if err != nil || len(created) != 2 {
 		t.Fatalf("Init: %v %v", created, err)
@@ -81,7 +81,7 @@ func TestLoadRejects(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "dbmeta")
+			dir := filepath.Join(t.TempDir(), ".dbmeta")
 			writeCfg(t, dir, body, 0o600)
 			if _, err := Load(dir); err == nil {
 				t.Error("expected error")
@@ -94,7 +94,7 @@ func TestLoadPermission(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix permissions only")
 	}
-	dir := filepath.Join(t.TempDir(), "dbmeta")
+	dir := filepath.Join(t.TempDir(), ".dbmeta")
 	writeCfg(t, dir, `{"instances":{}}`, 0o644)
 	_, err := Load(dir)
 	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
@@ -104,7 +104,7 @@ func TestLoadPermission(t *testing.T) {
 
 func TestFind(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "dbmeta")
+	dir := filepath.Join(root, ".dbmeta")
 	writeCfg(t, dir, `{"instances":{}}`, 0o600)
 	deep := filepath.Join(root, "a", "b", "c")
 	os.MkdirAll(deep, 0o755)

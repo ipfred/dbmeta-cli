@@ -52,7 +52,7 @@ const addUsage = `用法: dbmeta-cli instance add <名称> --jdbc <url> [选项]
   --force            同名实例已存在时覆盖
   --dir <目录>       ` + dirFlagHelp + `
 
-dbmeta/ 不存在时会先自动创建。`
+.dbmeta/ 不存在时会先自动创建。`
 
 func runInstanceAdd(_ context.Context, env *Env, args []string) error {
 	fs := flag.NewFlagSet("instance add", flag.ContinueOnError)
@@ -150,6 +150,7 @@ func runInstanceAdd(_ context.Context, env *Env, args []string) error {
 	if inst.User == "" {
 		fmt.Fprintf(out, "user 为空,请手动编辑 %s 填写\n", cfgPath)
 	}
+	fmt.Fprintf(out, "填好密码后运行 dbmeta-cli db sync %s,登记这个实例里的库(之后 table get 只写 库.表 即可)\n", name)
 	if res != nil {
 		for _, n := range res.Notes {
 			fmt.Fprintf(out, "提示: %s\n", n)
@@ -164,7 +165,7 @@ func runInstanceAdd(_ context.Context, env *Env, args []string) error {
 	return nil
 }
 
-// ensureProjectDir finds dbmeta/ or creates it, reporting whether it created one.
+// ensureProjectDir finds .dbmeta/ or creates it, reporting whether it created one.
 func ensureProjectDir(env *Env, flagVal string) (dir string, created bool, err error) {
 	dir, err = findDir(env, flagVal)
 	if err == nil {

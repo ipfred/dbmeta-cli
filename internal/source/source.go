@@ -1,6 +1,7 @@
-// Package source defines the one thing dbmeta may ask of a database: the
-// structure of a single, named table. There is deliberately no method that
-// accepts SQL, lists databases, or lists tables.
+// Package source defines the only things dbmeta may ask of a database: the
+// structure of a single, named table, and the names of the databases the
+// account can see (used to route "db.table" to instances). There is
+// deliberately no method that accepts SQL or lists tables.
 package source
 
 import (
@@ -23,5 +24,8 @@ type Source interface {
 	// FetchTable returns the structure of db.table. Instance, FetchedAt and
 	// SchemaHash are filled in by the caller.
 	FetchTable(ctx context.Context, db, table string) (*schema.TableSchema, error)
+	// ListDatabases returns the user databases visible to the account: system
+	// schemas and names that fail guard.Ident are dropped. Sorted, unique.
+	ListDatabases(ctx context.Context) ([]string, error)
 	Close() error
 }

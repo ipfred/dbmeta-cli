@@ -128,11 +128,12 @@ func newRoot() *Command {
 	return &Command{
 		Name:  binName,
 		Short: "只读的数据库表结构查询工具",
-		Usage: "用法: dbmeta-cli <命令> [参数]\n\n只取单个表的结构(字段、索引、DDL),带本地缓存。没有执行任意 SQL 的入口。\n请始终使用只读数据库账号。",
+		Usage: "用法: dbmeta-cli <命令> [参数]\n\n只取表结构(字段、索引、DDL)和实例里的库名,带本地缓存。没有执行任意 SQL 的入口。\n请始终使用只读数据库账号。",
 		Sub: []*Command{
 			initCommand(),
 			instanceCommand(),
 			tableCommand(),
+			dbCommand(),
 			cacheCommand(),
 			skillCommand(),
 			versionCommand(),
@@ -228,7 +229,7 @@ func parseFlags(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-const dirFlagHelp = "dbmeta 目录或项目根目录(默认向上查找 dbmeta/config.json,也可用环境变量 DBMETA_DIR)"
+const dirFlagHelp = ".dbmeta 目录或项目根目录(默认向上查找 .dbmeta/config.json,也可用环境变量 DBMETA_DIR)"
 
 func dirFlag(fs *flag.FlagSet) *string {
 	return fs.String("dir", "", dirFlagHelp)
@@ -243,7 +244,7 @@ func explicitDir(env *Env, flagVal string) string {
 }
 
 type project struct {
-	dir string // the dbmeta directory
+	dir string // the .dbmeta directory
 	cfg *config.Config
 }
 
@@ -253,7 +254,7 @@ func (p *project) store(env *Env) *cache.Store {
 	return s
 }
 
-// findDir locates dbmeta/ without reading the config file.
+// findDir locates .dbmeta/ without reading the config file.
 func findDir(env *Env, flagVal string) (string, error) {
 	cwd, err := env.Getwd()
 	if err != nil {

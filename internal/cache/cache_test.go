@@ -24,7 +24,7 @@ func (c *clock) advance(d time.Duration) { c.t = c.t.Add(d) }
 func newStore(t *testing.T) (*Store, *clock) {
 	t.Helper()
 	clk := &clock{t0}
-	s := &Store{Root: filepath.Join(t.TempDir(), "dbmeta"), Now: clk.now}
+	s := &Store{Root: filepath.Join(t.TempDir(), ".dbmeta"), Now: clk.now}
 	return s, clk
 }
 
@@ -357,5 +357,49 @@ func TestListFlagsUnreadable(t *testing.T) {
 	l, err := s.List("i", "")
 	if err != nil || len(l) != 1 || !l[0].Unreadable {
 		t.Fatalf("%v %+v", err, l)
+	}
+}
+
+func TestNegativeCache(t *testing.T) {
+	s, clk := newStore(t)
+	f := &fetcher{version: "int", err: source.ErrNotFound}
+	ctx := context.Background()
+
+	if _, err := s.Resolve(ctx, req(Auto), f.fetch); !errors.Is(err, source.ErrNotFound) || f.calls != 1 {
+		t.Fatalf("first call: err=%v calls=%d", err, f.calls)
+	}
+	// Within TTL the instance is not asked again.
+	if _, err := s.Resolve(ctx, req(Auto), f.fetch); !errors.Is(err, source.ErrNotFound) || f.calls != 1 {
+		t.Fatalf("second call should be served by the miss marker: err=%v calls=%d", err, f.calls)
+	}
+	// --refresh bypasses it.
+	if _, err := s.Resolve(ctx, req(Refresh), f.fetch); !errors.Is(err, source.ErrNotFound) || f.calls != 2 {
+		t.Fatalf("refresh: err=%v calls=%d", err, f.calls)
+	}
+	// After the TTL it is asked again.
+	clk.advance(ttl + time.Hour)
+	if _, err := s.Resolve(ctx, req(Auto), f.fetch); !errors.Is(err, source.ErrNotFound) || f.calls != 3 {
+		t.Fatalf("after ttl: err=%v calls=%d", err, f.calls)
+	}
+	// Other errors are never remembered.
+	g := &fetcher{version: "int", err: source.ErrConn}
+	r := req(Auto)
+	r.Table = "other"
+	s.Resolve(ctx, r, g.fetch)
+	s.Resolve(ctx, r, g.fetch)
+	if g.calls != 2 {
+		t.Errorf("connection errors must not be cached, calls=%d", g.calls)
+	}
+	// A successful fetch clears the marker, and Clear removes it too.
+	f.err = nil
+	if _, err := s.Resolve(ctx, req(Refresh), f.fetch); err != nil {
+		t.Fatal(err)
+	}
+	if s.MissFresh("i", "d", "t", ttl) {
+		t.Error("marker should be gone after a successful fetch")
+	}
+	s.WriteMiss("i", "d", "gone")
+	if _, err := s.Clear("i", "d", "gone"); err != nil || s.MissFresh("i", "d", "gone", ttl) {
+		t.Errorf("Clear should remove the marker: %v", err)
 	}
 }

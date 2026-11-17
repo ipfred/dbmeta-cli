@@ -52,6 +52,13 @@ type Outcome struct {
 	Path        string
 }
 
+func formatTTL(d time.Duration) string {
+	if d >= 24*time.Hour && d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	}
+	return d.String()
+}
+
 // Resolve implements the decision table:
 //
 //	Refresh     -> query; failure is an error
@@ -99,10 +106,17 @@ func (s *Store) Resolve(ctx context.Context, req Request, fetch FetchFunc) (*Out
 			out.Schema, out.Kind = old, Hit
 			return out, nil
 		}
+		if old == nil && s.MissFresh(req.Instance, req.Database, req.Table, req.TTL) {
+			return nil, fmt.Errorf("%w: %s.%s(此前已确认该实例没有这张表,%s 内不再重试;--refresh 可强制重查)",
+				source.ErrNotFound, req.Database, req.Table, formatTTL(req.TTL))
+		}
 	}
 
 	ts, err := fetch(ctx)
 	if err != nil {
+		if errors.Is(err, source.ErrNotFound) && old == nil {
+			s.WriteMiss(req.Instance, req.Database, req.Table)
+		}
 		if req.Mode == Auto && old != nil && !errors.Is(err, source.ErrNotFound) {
 			old.Stale = true
 			// Persist the flag so someone browsing the files sees it too. A
@@ -130,6 +144,7 @@ func (s *Store) Resolve(ctx context.Context, req Request, fetch FetchFunc) (*Out
 	if err := s.Write(ts); err != nil {
 		return nil, fmt.Errorf("写入缓存失败: %w", err)
 	}
+	s.clearMiss(req.Instance, req.Database, req.Table)
 	out.Schema, out.Kind = ts, Fetched
 	return out, nil
 }

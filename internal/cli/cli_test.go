@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,20 +20,39 @@ import (
 )
 
 type fakeSource struct {
-	h *harness
+	h    *harness
+	host string
 }
 
 func (f *fakeSource) Ping(context.Context) error { return f.h.pingErr }
 func (f *fakeSource) Close() error               { return nil }
+func (f *fakeSource) ListDatabases(context.Context) ([]string, error) {
+	f.h.mu.Lock()
+	defer f.h.mu.Unlock()
+	f.h.listed = append(f.h.listed, f.host)
+	if err := f.h.listErrs[f.host]; err != nil {
+		return nil, err
+	}
+	return f.h.dbs[f.host], nil
+}
 func (f *fakeSource) FetchTable(_ context.Context, db, table string) (*schema.TableSchema, error) {
-	f.h.fetches = append(f.h.fetches, db+"."+table)
+	f.h.mu.Lock()
+	defer f.h.mu.Unlock()
+	f.h.fetches = append(f.h.fetches, f.host+"/"+db+"."+table)
 	if f.h.fetchErr != nil {
 		return nil, f.h.fetchErr
 	}
+	if f.h.missing[f.host+"/"+db+"."+table] {
+		return nil, fmt.Errorf("%w: %s.%s", source.ErrNotFound, db, table)
+	}
+	extra := f.h.extraCol
+	if c, ok := f.h.extraCols[f.host]; ok {
+		extra = c
+	}
 	return &schema.TableSchema{
-		Server: "10.0.0.12:3306", ServerVersion: "8.0.32", Engine: "InnoDB", Charset: "utf8mb4", RowsEstimate: 10,
+		Server: f.host + ":3306", ServerVersion: "8.0.32", Engine: "InnoDB", Charset: "utf8mb4", RowsEstimate: 10,
 		Comment: f.h.comment,
-		Columns: []schema.Column{{Ordinal: 1, Name: "id", Type: "bigint", Key: "PRI"}, {Ordinal: 2, Name: f.h.extraCol, Type: "int"}},
+		Columns: []schema.Column{{Ordinal: 1, Name: "id", Type: "bigint", Key: "PRI"}, {Ordinal: 2, Name: extra, Type: "int"}},
 		Indexes: []schema.Index{{Name: "PRIMARY", Unique: true, Columns: []string{"id"}, Type: "BTREE"}},
 		DDL:     "CREATE TABLE `" + table + "` (...)",
 	}, nil
@@ -54,6 +74,15 @@ type harness struct {
 	comment  string
 	extraCol string
 	environ  map[string]string
+
+	// Multi-instance behaviour, keyed by host. Fetches run in parallel, so mu guards the recorders.
+	mu        sync.Mutex
+	listed    []string
+	dbs       map[string][]string
+	listErrs  map[string]error
+	openErrs  map[string]error
+	extraCols map[string]string
+	missing   map[string]bool // "host/db.table"
 }
 
 func newHarness(t *testing.T) *harness {
@@ -63,7 +92,8 @@ func newHarness(t *testing.T) *harness {
 		root = r
 	}
 	h := &harness{t: t, cwd: filepath.Join(root, "proj"), home: filepath.Join(root, "home"),
-		now: time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), extraCol: "status", comment: "orders", environ: map[string]string{}}
+		now: time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), extraCol: "status", comment: "orders", environ: map[string]string{},
+		dbs: map[string][]string{}, listErrs: map[string]error{}, openErrs: map[string]error{}, extraCols: map[string]string{}, missing: map[string]bool{}}
 	os.MkdirAll(h.cwd, 0o755)
 	os.MkdirAll(h.home, 0o755)
 	h.env = &Env{
@@ -73,11 +103,16 @@ func newHarness(t *testing.T) *harness {
 		HomeDir: func() (string, error) { return h.home, nil },
 		Now:     func() time.Time { return h.now },
 		Open: func(_ context.Context, inst *config.Instance, _ func(string, ...any)) (source.Source, error) {
+			h.mu.Lock()
+			defer h.mu.Unlock()
 			h.opens++
 			if h.openErr != nil {
 				return nil, h.openErr
 			}
-			return &fakeSource{h}, nil
+			if err := h.openErrs[inst.Host]; err != nil {
+				return nil, err
+			}
+			return &fakeSource{h, inst.Host}, nil
 		},
 	}
 	return h
@@ -98,7 +133,7 @@ func (h *harness) mustRun(args ...string) string {
 	return h.stdout.String()
 }
 
-func (h *harness) dbmetaDir() string { return filepath.Join(h.cwd, "dbmeta") }
+func (h *harness) dbmetaDir() string { return filepath.Join(h.cwd, ".dbmeta") }
 
 // setPassword edits config.json the way a user would.
 func (h *harness) setPassword(name, pw string) {
@@ -148,7 +183,7 @@ func TestInitCreatesFiles(t *testing.T) {
 
 func TestInstanceAddJDBC(t *testing.T) {
 	h := newHarness(t)
-	// dbmeta/ does not exist yet: add must init it.
+	// .dbmeta/ does not exist yet: add must init it.
 	out := h.mustRun("instance", "add", "order_prod", "--env", "prod", "--desc", "订单主库",
 		"--jdbc", "jdbc:mysql://10.0.0.12:3306/order?user=readonly&password=SECRET&useSSL=false&serverTimezone=UTC")
 	for _, want := range []string{
@@ -229,7 +264,7 @@ func TestInstanceList(t *testing.T) {
 		t.Errorf("list must not show the password:\n%s", out)
 	}
 
-	h.mustRun("table", "get", "order_prod", "order", "t_order")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	if out := h.mustRun("instance", "list"); !strings.Contains(out, "1 库 / 1 表") {
 		t.Errorf("cache counts missing:\n%s", out)
 	}
@@ -248,10 +283,10 @@ func TestInstanceList(t *testing.T) {
 
 func TestListWithoutInit(t *testing.T) {
 	h := newHarness(t)
-	if code := h.run("instance", "list"); code != ExitUsage || !strings.Contains(h.stderr.String(), "未找到 dbmeta/config.json") {
+	if code := h.run("instance", "list"); code != ExitUsage || !strings.Contains(h.stderr.String(), "未找到 .dbmeta/config.json") {
 		t.Errorf("code %d: %s", code, h.stderr.String())
 	}
-	if code := h.run("table", "get", "a", "d", "t"); code != ExitUsage || !strings.Contains(h.stderr.String(), "dbmeta-cli init") {
+	if code := h.run("table", "get", "-i", "a", "d.t"); code != ExitUsage || !strings.Contains(h.stderr.String(), "dbmeta-cli init") {
 		t.Errorf("code %d: %s", code, h.stderr.String())
 	}
 }
@@ -280,7 +315,7 @@ func TestTableGetCacheFlow(t *testing.T) {
 	h.addOrder()
 
 	// 1. First call queries and writes the cache; stdout is only the structure.
-	out := h.mustRun("table", "get", "order_prod", "order", "t_order")
+	out := h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	if h.opens != 1 || len(h.fetches) != 1 {
 		t.Fatalf("opens=%d fetches=%v", h.opens, h.fetches)
 	}
@@ -298,11 +333,11 @@ func TestTableGetCacheFlow(t *testing.T) {
 	// 2. Within TTL: cache hit, no connection.
 	h.now = h.now.Add(3 * 24 * time.Hour)
 	h.opens = 0
-	again := h.mustRun("table", "get", "order_prod", "order", "t_order")
+	again := h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	if h.opens != 0 || again == "" {
 		t.Errorf("cache hit should not connect (opens=%d)", h.opens)
 	}
-	if want := "dbmeta: cache hit (fetched 2026-10-24, age 3d, ttl 7d)"; !strings.Contains(h.stderr.String(), want) {
+	if want := "dbmeta: order.t_order@order_prod: cache hit (fetched 2026-10-24, age 3d, ttl 7d)"; !strings.Contains(h.stderr.String(), want) {
 		t.Errorf("stderr = %q, want %q", h.stderr.String(), want)
 	}
 	if strings.Replace(again, "stale: false", "", 1) != strings.Replace(out, "stale: false", "", 1) {
@@ -311,7 +346,7 @@ func TestTableGetCacheFlow(t *testing.T) {
 
 	// 3. --ttl 1d makes it expired -> refetch, and a changed table is reported.
 	h.extraCol = "state"
-	h.mustRun("table", "get", "order_prod", "order", "t_order", "--ttl", "1d")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "--ttl", "1d")
 	if h.opens != 1 || !strings.Contains(h.stderr.String(), "表结构已变化") {
 		t.Errorf("opens=%d stderr=%q", h.opens, h.stderr.String())
 	}
@@ -322,7 +357,7 @@ func TestTableGetCacheFlow(t *testing.T) {
 
 	// 4. --refresh always connects, even when fresh.
 	h.opens = 0
-	h.mustRun("table", "get", "order_prod", "order", "t_order", "--refresh")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "--refresh")
 	if h.opens != 1 {
 		t.Errorf("--refresh opens=%d", h.opens)
 	}
@@ -330,14 +365,14 @@ func TestTableGetCacheFlow(t *testing.T) {
 	// 5. --cached never connects, even when expired; warns instead.
 	h.opens = 0
 	h.now = h.now.Add(30 * 24 * time.Hour)
-	h.mustRun("table", "get", "order_prod", "order", "t_order", "--cached")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "--cached")
 	if h.opens != 0 || !strings.Contains(h.stderr.String(), "stale") {
 		t.Errorf("opens=%d stderr=%q", h.opens, h.stderr.String())
 	}
 
 	// 6. Expired + database down: stale fallback with exit 0 and a warning.
 	h.openErr = fmt.Errorf("%w: dial tcp: refused", source.ErrConn)
-	h.mustRun("table", "get", "order_prod", "order", "t_order")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	if !strings.Contains(h.stderr.String(), "警告") || !strings.Contains(h.stderr.String(), "stale") {
 		t.Errorf("fallback warning missing: %q", h.stderr.String())
 	}
@@ -346,7 +381,7 @@ func TestTableGetCacheFlow(t *testing.T) {
 	}
 
 	// 7. --refresh with the database down fails with 6 and no fallback.
-	if code := h.run("table", "get", "order_prod", "order", "t_order", "--refresh"); code != ExitNetwork {
+	if code := h.run("table", "get", "-i", "order_prod", "order.t_order", "--refresh"); code != ExitNetwork {
 		t.Errorf("--refresh with db down: exit %d", code)
 	}
 	if h.stdout.Len() != 0 {
@@ -359,20 +394,20 @@ func TestTableGetOutputModes(t *testing.T) {
 	h.addOrder()
 
 	var ts schema.TableSchema
-	if err := json.Unmarshal([]byte(h.mustRun("table", "get", "order_prod", "order", "t_order", "--format", "json")), &ts); err != nil {
+	if err := json.Unmarshal([]byte(h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "--format", "json")), &ts); err != nil {
 		t.Fatal(err)
 	}
 	if ts.Table != "t_order" || len(ts.Columns) != 2 || ts.SchemaHash == "" {
 		t.Errorf("%+v", ts)
 	}
 
-	path := strings.TrimSpace(h.mustRun("table", "get", "order_prod", "order", "t_order", "--print-path"))
+	path := strings.TrimSpace(h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "--print-path"))
 	if path != filepath.Join(h.dbmetaDir(), "order_prod", "order", "t_order.md") {
 		t.Errorf("print-path = %q", path)
 	}
 
 	out := filepath.Join(t.TempDir(), "out.md")
-	if got := h.mustRun("table", "get", "order_prod", "order", "t_order", "-o", out); got != "" {
+	if got := h.mustRun("table", "get", "-i", "order_prod", "order.t_order", "-o", out); got != "" {
 		t.Errorf("-o should leave stdout empty, got %q", got)
 	}
 	if b, err := os.ReadFile(out); err != nil || !strings.Contains(string(b), "# order_prod / order / t_order") {
@@ -391,27 +426,28 @@ func TestTableGetExitCodes(t *testing.T) {
 		code  int
 		opens int
 	}{
-		{"unknown instance", []string{"nope", "order", "t"}, nil, ExitUsage, 0},
-		{"bad db identifier", []string{"order_prod", "or`der", "t"}, nil, ExitUsage, 0},
-		{"wildcard table", []string{"order_prod", "order", "t%"}, nil, ExitUsage, 0},
-		{"traversal table", []string{"order_prod", "order", "../x"}, nil, ExitUsage, 0},
-		{"dotted name", []string{"order_prod", "order", "a.b"}, nil, ExitUsage, 0},
+		{"unknown instance", []string{"-i", "nope", "order.t"}, nil, ExitUsage, 0},
+		{"bad db identifier", []string{"-i", "order_prod", "or`der.t"}, nil, ExitUsage, 0},
+		{"wildcard table", []string{"-i", "order_prod", "order.t%"}, nil, ExitUsage, 0},
+		{"traversal table", []string{"-i", "order_prod", "order.../x"}, nil, ExitUsage, 0},
+		{"dotted name", []string{"-i", "order_prod", "order.a.b"}, nil, ExitUsage, 0},
 		{"missing args", []string{"order_prod", "order"}, nil, ExitUsage, 0},
-		{"conflicting flags", []string{"order_prod", "order", "t", "--refresh", "--cached"}, nil, ExitUsage, 0},
-		{"bad format", []string{"order_prod", "order", "t", "--format", "xml"}, nil, ExitUsage, 0},
-		{"bad ttl", []string{"order_prod", "order", "t", "--ttl", "soon"}, nil, ExitUsage, 0},
-		{"outside allowlist", []string{"order_prod", "other_db", "t"}, nil, ExitNotAllowed, 0},
-		{"allowlist applies to --cached", []string{"order_prod", "other_db", "t", "--cached"}, nil, ExitNotAllowed, 0},
-		{"cache miss", []string{"order_prod", "order", "t", "--cached"}, nil, ExitCacheMiss, 0},
-		{"table not found", []string{"order_prod", "order", "t"}, func() { h.fetchErr = fmt.Errorf("%w: order.t", source.ErrNotFound) }, ExitNotFound, 1},
-		{"auth failure", []string{"order_prod", "order", "t"}, func() { h.fetchErr = fmt.Errorf("%w: denied", source.ErrAuth) }, ExitAuth, 1},
-		{"network failure", []string{"order_prod", "order", "t"}, func() { h.openErr = fmt.Errorf("%w: refused", source.ErrConn) }, ExitNetwork, 1},
-		{"empty password", []string{"order_prod", "order", "t"}, func() { h.setPassword("order_prod", "") }, ExitAuth, 0},
+		{"conflicting flags", []string{"-i", "order_prod", "order.t", "--refresh", "--cached"}, nil, ExitUsage, 0},
+		{"bad format", []string{"-i", "order_prod", "order.t", "--format", "xml"}, nil, ExitUsage, 0},
+		{"bad ttl", []string{"-i", "order_prod", "order.t", "--ttl", "soon"}, nil, ExitUsage, 0},
+		{"outside allowlist", []string{"-i", "order_prod", "other_db.t"}, nil, ExitNotAllowed, 0},
+		{"allowlist applies to --cached", []string{"-i", "order_prod", "other_db.t", "--cached"}, nil, ExitNotAllowed, 0},
+		{"cache miss", []string{"-i", "order_prod", "order.t", "--cached"}, nil, ExitCacheMiss, 0},
+		{"table not found", []string{"-i", "order_prod", "order.t"}, func() { h.fetchErr = fmt.Errorf("%w: order.t", source.ErrNotFound) }, ExitNotFound, 1},
+		{"auth failure", []string{"-i", "order_prod", "order.t"}, func() { h.fetchErr = fmt.Errorf("%w: denied", source.ErrAuth) }, ExitAuth, 1},
+		{"network failure", []string{"-i", "order_prod", "order.t"}, func() { h.openErr = fmt.Errorf("%w: refused", source.ErrConn) }, ExitNetwork, 1},
+		{"empty password", []string{"-i", "order_prod", "order.t"}, func() { h.setPassword("order_prod", "") }, ExitAuth, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h.fetchErr, h.openErr, h.opens = nil, nil, 0
 			h.setPassword("order_prod", "pw")
+			os.RemoveAll(filepath.Join(h.dbmetaDir(), "order_prod")) // no negative-cache carry-over between cases
 			if tc.pre != nil {
 				tc.pre()
 			}
@@ -431,7 +467,7 @@ func TestTableGetExitCodes(t *testing.T) {
 func TestEmptyPasswordErrorMentionsConfigButNotSecrets(t *testing.T) {
 	h := newHarness(t)
 	h.mustRun("instance", "add", "a", "--host", "h", "--user", "u")
-	if code := h.run("table", "get", "a", "d", "t"); code != ExitAuth {
+	if code := h.run("table", "get", "-i", "a", "d.t"); code != ExitAuth {
 		t.Fatalf("exit %d", code)
 	}
 	if !strings.Contains(h.stderr.String(), "config.json") || h.opens != 0 {
@@ -445,10 +481,10 @@ func TestEmptyPasswordErrorMentionsConfigButNotSecrets(t *testing.T) {
 func TestEmptyPasswordWithStaleCacheFallsBack(t *testing.T) {
 	h := newHarness(t)
 	h.addOrder()
-	h.mustRun("table", "get", "order_prod", "order", "t_order")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	h.setPassword("order_prod", "")
 	h.now = h.now.Add(10 * 24 * time.Hour)
-	h.mustRun("table", "get", "order_prod", "order", "t_order")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t_order")
 	if !strings.Contains(h.stderr.String(), "stale") {
 		t.Errorf("stderr: %s", h.stderr.String())
 	}
@@ -472,8 +508,8 @@ func TestInstancePing(t *testing.T) {
 func TestCacheCommands(t *testing.T) {
 	h := newHarness(t)
 	h.addOrder()
-	h.mustRun("table", "get", "order_prod", "order", "t1")
-	h.mustRun("table", "get", "order_prod", "order", "t2")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t1")
+	h.mustRun("table", "get", "-i", "order_prod", "order.t2")
 	h.now = h.now.Add(8 * 24 * time.Hour)
 
 	out := h.mustRun("cache", "list")
@@ -487,7 +523,7 @@ func TestCacheCommands(t *testing.T) {
 	if out := h.mustRun("cache", "clear", "order_prod", "order", "t1"); !strings.Contains(out, "1 个") {
 		t.Errorf("%s", out)
 	}
-	if code := h.run("table", "get", "order_prod", "order", "t1", "--cached"); code != ExitCacheMiss {
+	if code := h.run("table", "get", "-i", "order_prod", "order.t1", "--cached"); code != ExitCacheMiss {
 		t.Errorf("cleared entry should miss, exit %d", code)
 	}
 	if out := h.mustRun("cache", "clear", "order_prod"); !strings.Contains(out, "1 个") {
@@ -510,14 +546,14 @@ func TestSkillInstall(t *testing.T) {
 	h.mustRun("skill", "install")
 	global := filepath.Join(h.home, ".agents", "skills", "dbmeta", "SKILL.md")
 	b, err := os.ReadFile(global)
-	if err != nil || !strings.HasPrefix(string(b), "---\nname: dbmeta\n") {
+	if err != nil || !strings.HasPrefix(strings.ReplaceAll(string(b), "\r\n", "\n"), "---\nname: dbmeta\n") {
 		t.Fatalf("%v\n%s", err, b)
 	}
 	if strings.Contains(string(b), "password\":") {
 		t.Error("skill must not contain connection info")
 	}
 
-	// Project scope: next to dbmeta/'s parent, found from a subdirectory.
+	// Project scope: next to .dbmeta/'s parent, found from a subdirectory.
 	h.mustRun("init")
 	projRoot := h.cwd
 	sub := filepath.Join(h.cwd, "pkg")
@@ -530,7 +566,7 @@ func TestSkillInstall(t *testing.T) {
 		}
 	}
 
-	// No dbmeta/ at all: project root is the working directory.
+	// No .dbmeta/ at all: project root is the working directory.
 	h.cwd = t.TempDir()
 	h.mustRun("skill", "install", "--scope", "project")
 	if _, err := os.Stat(filepath.Join(h.cwd, ".agents", "skills", "dbmeta", "SKILL.md")); err != nil {

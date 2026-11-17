@@ -26,6 +26,9 @@ const (
 	sqlPing    = `SELECT 1`
 	sqlVersion = `SELECT VERSION()`
 
+	// Database names only: used to route "db.table" to the instances that have it.
+	sqlSchemata = `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA`
+
 	sqlTables = `SELECT TABLE_COMMENT, ENGINE, TABLE_COLLATION, TABLE_ROWS
 FROM information_schema.TABLES
 WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`
@@ -128,6 +131,38 @@ func (s *mysqlSource) Ping(ctx context.Context) error {
 		return classify(err)
 	}
 	return nil
+}
+
+var systemSchemas = map[string]bool{
+	"information_schema": true, "mysql": true, "performance_schema": true, "sys": true,
+	// Tencent Cloud (TDSQL/CDB) internal schemas.
+	"__tencentdb__": true, "__cdb_recycle_bin__": true,
+}
+
+func (s *mysqlSource) ListDatabases(ctx context.Context) ([]string, error) {
+	rows, err := s.conn.QueryContext(ctx, sqlSchemata)
+	if err != nil {
+		return nil, classify(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, classify(err)
+		}
+		if systemSchemas[strings.ToLower(name)] || guard.Ident("库名", name) != nil || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classify(err)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (s *mysqlSource) FetchTable(ctx context.Context, db, table string) (*schema.TableSchema, error) {

@@ -36,7 +36,7 @@ const skillUsage = `用法: dbmeta-cli skill <命令> [选项]
   print       把 SKILL.md 输出到 stdout
 
 选项(install / uninstall):
-  --scope global|project   默认 global。project 装到 <项目根>/ 下(项目根是 dbmeta/ 的上一级,找不到则取当前目录)
+  --scope global|project   默认 global。project 装到 <项目根>/ 下(项目根是 .dbmeta/ 的上一级,找不到则取当前目录)
   --target <列表>          agents,claude,factory,codex,opencode,all(逗号分隔),默认 agents
   --dir <目录>             安装到自定义 skills 目录(优先于 --target 和 --scope)
 
@@ -171,7 +171,7 @@ func resolveSkillDirs(env *Env, scope, target, dir string) ([]skillDir, error) {
 	return out, nil
 }
 
-// projectRoot is the parent of dbmeta/, or the working directory when there is none.
+// projectRoot is the parent of .dbmeta/, or the working directory when there is none.
 func projectRoot(env *Env) (string, error) {
 	cwd, err := env.Getwd()
 	if err != nil {

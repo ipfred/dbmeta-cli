@@ -170,6 +170,32 @@ func TestPing(t *testing.T) {
 	}
 }
 
+func TestListDatabasesFiltersSystemAndInvalidNames(t *testing.T) {
+	db, mock := newMock(t)
+	expectSession(mock)
+	mock.ExpectQuery(sqlSchemata).WillReturnRows(sqlmock.NewRows([]string{"SCHEMA_NAME"}).
+		AddRow("mysql").AddRow("bdp_ent").AddRow("INFORMATION_SCHEMA").AddRow("sys").
+		AddRow("performance_schema").AddRow("bad`name").AddRow("bdp_ic_gsxt").AddRow("bdp_ent"))
+	src, _ := fromDB(context.Background(), db, "h:3306", Options{})
+	got, err := src.ListDatabases(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "bdp_ent,bdp_ic_gsxt"; strings.Join(got, ",") != want {
+		t.Errorf("got %v, want %s", got, want)
+	}
+}
+
+func TestListDatabasesClassifiesErrors(t *testing.T) {
+	db, mock := newMock(t)
+	expectSession(mock)
+	mock.ExpectQuery(sqlSchemata).WillReturnError(&gomysql.MySQLError{Number: 1045, Message: "denied"})
+	src, _ := fromDB(context.Background(), db, "h:3306", Options{})
+	if _, err := src.ListDatabases(context.Background()); !errors.Is(err, source.ErrAuth) {
+		t.Errorf("got %v", err)
+	}
+}
+
 func TestErrorClassification(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -200,7 +226,7 @@ func TestEveryCallSiteUsesAnAllowlistedConstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{
-		"sqlPing": true, "sqlVersion": true, "sqlTables": true, "sqlColumns": true, "sqlIndexes": true,
+		"sqlPing": true, "sqlVersion": true, "sqlSchemata": true, "sqlTables": true, "sqlColumns": true, "sqlIndexes": true,
 		"sqlReadOnly": true, "sqlMaxExecMS": true, "sqlMaxStatementS": true, "fmt.Sprintf(sqlShowCreate": true,
 	}
 	re := regexp.MustCompile(`\.(?:Query|QueryRow|Exec|Prepare)Context\(\s*ctx,\s*([^,)]+)`)

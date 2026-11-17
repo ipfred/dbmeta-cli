@@ -23,16 +23,16 @@ func versionCommand() *Command {
 
 const initUsage = `用法: dbmeta-cli init [--dir <目录>]
 
-在当前目录创建 dbmeta/(含空的 config.json,权限 0600,以及只忽略 config.json 的 .gitignore)。
+在当前目录创建 .dbmeta/(含空的 config.json,权限 0600,以及只忽略 config.json 的 .gitignore)。
 已存在的文件不会被覆盖。
 
 选项:
-  --dir <目录>   在指定项目根目录(或 dbmeta 目录)下创建`
+  --dir <目录>   在指定项目根目录(或 .dbmeta 目录)下创建`
 
 func initCommand() *Command {
 	return &Command{
 		Name:  "init",
-		Short: "在当前项目创建 dbmeta/ 目录",
+		Short: "在当前项目创建 .dbmeta/ 目录",
 		Usage: initUsage,
 		Run: func(_ context.Context, env *Env, args []string) error {
 			fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -65,7 +65,7 @@ func initCommand() *Command {
 	}
 }
 
-// initTarget is where init and the auto-init in `instance add` create dbmeta/.
+// initTarget is where init and the auto-init in `instance add` create .dbmeta/.
 func initTarget(env *Env, flagVal string) (string, error) {
 	if d := explicitDir(env, flagVal); d != "" {
 		return config.ResolveDir(d), nil

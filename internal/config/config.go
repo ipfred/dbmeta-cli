@@ -1,4 +1,4 @@
-// Package config locates and reads dbmeta/config.json, the single file that
+// Package config locates and reads .dbmeta/config.json, the single file that
 // holds both connection settings and tool settings.
 package config
 
@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DirName        = "dbmeta"
+	DirName        = ".dbmeta"
 	FileName       = "config.json"
 	DefaultTTL     = 168 * time.Hour
 	DefaultPort    = 3306
@@ -30,8 +30,8 @@ const (
 	configFileMode = 0o600
 )
 
-// ErrNotFound means no dbmeta/config.json exists (exit code 2, hint: run init).
-var ErrNotFound = errors.New("未找到 dbmeta/config.json,请先运行 dbmeta-cli init")
+// ErrNotFound means no .dbmeta/config.json exists (exit code 2, hint: run init).
+var ErrNotFound = errors.New("未找到 .dbmeta/config.json,请先运行 dbmeta-cli init")
 
 var tlsModes = map[string]bool{"false": true, "preferred": true, "true": true, "skip-verify": true}
 
@@ -98,8 +98,8 @@ func ParseTTL(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// ResolveDir maps a user-supplied path to the dbmeta directory: a path ending
-// in "dbmeta" is used as is, anything else is treated as a project root.
+// ResolveDir maps a user-supplied path to the .dbmeta directory: a path ending
+// in ".dbmeta" is used as is, anything else is treated as a project root.
 func ResolveDir(p string) string {
 	p = filepath.Clean(p)
 	if filepath.Base(p) == DirName {
@@ -110,8 +110,8 @@ func ResolveDir(p string) string {
 
 func ConfigPath(dir string) string { return filepath.Join(dir, FileName) }
 
-// Find returns the dbmeta directory. An explicit path (flag or DBMETA_DIR) wins;
-// otherwise it walks up from start looking for dbmeta/config.json, like git does for .git.
+// Find returns the .dbmeta directory. An explicit path (flag or DBMETA_DIR) wins;
+// otherwise it walks up from start looking for .dbmeta/config.json, like git does for .git.
 func Find(start, explicit string) (string, error) {
 	if explicit != "" {
 		dir := ResolveDir(explicit)
@@ -162,7 +162,7 @@ func Init(dir string) (created []string, err error) {
 	return created, nil
 }
 
-// Load reads and validates dbmeta/config.json.
+// Load reads and validates .dbmeta/config.json.
 func Load(dir string) (*Config, error) {
 	path := ConfigPath(dir)
 	st, err := os.Stat(path)

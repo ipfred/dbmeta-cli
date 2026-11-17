@@ -1,4 +1,4 @@
-// Package cache stores one Markdown file per table under dbmeta/<instance>/<db>/
+// Package cache stores one Markdown file per table under .dbmeta/<instance>/<db>/
 // and decides when a stored copy may be served instead of querying the database.
 package cache
 
@@ -20,7 +20,7 @@ import (
 var ErrMiss = errors.New("缓存未命中")
 
 type Store struct {
-	Root string           // the dbmeta directory
+	Root string           // the .dbmeta directory
 	Now  func() time.Time // injected so tests control the clock
 }
 
@@ -45,6 +45,52 @@ func (s *Store) Path(instance, db, table string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(s.Root, instance, db, table+".md"), nil
+}
+
+// missPath is the negative-cache marker for a table known to be absent from an
+// instance. Identifiers cannot contain dots, so it never collides with a table file.
+func (s *Store) missPath(instance, db, table string) (string, error) {
+	p, err := s.Path(instance, db, table)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(p, ".md") + ".miss", nil
+}
+
+// MissFresh reports whether the table was recorded as absent less than ttl ago.
+func (s *Store) MissFresh(instance, db, table string, ttl time.Duration) bool {
+	p, err := s.missPath(instance, db, table)
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if err != nil {
+		return false
+	}
+	age := s.now().Sub(at)
+	return age < 0 || age < ttl
+}
+
+// WriteMiss records that the table is absent. Failures are ignored: the marker is only an optimisation.
+func (s *Store) WriteMiss(instance, db, table string) {
+	p, err := s.missPath(instance, db, table)
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(p), 0o755) != nil {
+		return
+	}
+	_ = os.WriteFile(p, []byte(s.now().Format(time.RFC3339)+"\n"), 0o644)
+}
+
+func (s *Store) clearMiss(instance, db, table string) {
+	if p, err := s.missPath(instance, db, table); err == nil {
+		_ = os.Remove(p)
+	}
 }
 
 // Read loads an entry. A missing file is ErrMiss; an unparsable one wraps both
@@ -214,8 +260,10 @@ func (s *Store) Clear(instance, db, table string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	s.clearMiss(instance, db, table)
 	if err := os.Remove(p); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			s.pruneEmpty(filepath.Dir(p))
 			return 0, nil
 		}
 		return 0, err
