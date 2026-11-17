@@ -127,6 +127,37 @@ func TestFind(t *testing.T) {
 	}
 }
 
+func TestFindWithGlobal(t *testing.T) {
+	home := t.TempDir()
+	global := GlobalDir(home)
+	outside := t.TempDir() // not below home, like D:\work when home is C:\Users\x
+
+	if _, err := FindWithGlobal(outside, "", home); !errors.Is(err, ErrNotFound) {
+		t.Errorf("no global config yet: %v", err)
+	}
+	writeCfg(t, global, `{"instances":{}}`, 0o600)
+	if got, err := FindWithGlobal(outside, "", home); err != nil || got != global {
+		t.Errorf("fallback to global: %q %v", got, err)
+	}
+
+	// A project config wins over the global one.
+	proj := filepath.Join(outside, ".dbmeta")
+	writeCfg(t, proj, `{"instances":{}}`, 0o600)
+	sub := filepath.Join(outside, "src")
+	os.MkdirAll(sub, 0o755)
+	if got, err := FindWithGlobal(sub, "", home); err != nil || !sameFile(t, got, proj) {
+		t.Errorf("project first: %q %v", got, err)
+	}
+
+	// An explicit path never falls back; an empty home disables the fallback.
+	if _, err := FindWithGlobal(outside, filepath.Join(home, "nope"), home); !errors.Is(err, ErrNotFound) {
+		t.Errorf("explicit miss: %v", err)
+	}
+	if _, err := FindWithGlobal(t.TempDir(), "", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("empty home: %v", err)
+	}
+}
+
 func sameFile(t *testing.T, a, b string) bool {
 	t.Helper()
 	sa, err1 := os.Stat(a)

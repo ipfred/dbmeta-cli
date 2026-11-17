@@ -31,7 +31,7 @@ const (
 )
 
 // ErrNotFound means no .dbmeta/config.json exists (exit code 2, hint: run init).
-var ErrNotFound = errors.New("未找到 .dbmeta/config.json,请先运行 dbmeta-cli init")
+var ErrNotFound = errors.New("未找到 .dbmeta/config.json,请先运行 dbmeta-cli init(所有项目共用: dbmeta-cli init --scope global)")
 
 var tlsModes = map[string]bool{"false": true, "preferred": true, "true": true, "skip-verify": true}
 
@@ -135,6 +135,26 @@ func Find(start, explicit string) (string, error) {
 		}
 		d = parent
 	}
+}
+
+// GlobalDir is the per-user .dbmeta directory, shared by every project that has
+// none of its own. home comes from os.UserHomeDir: %USERPROFILE% on Windows,
+// $HOME on macOS and Linux.
+func GlobalDir(home string) string { return filepath.Join(home, DirName) }
+
+// FindWithGlobal is Find, falling back to the per-user directory when no
+// project config is found. An explicit path never falls back, and an empty
+// home disables the fallback.
+func FindWithGlobal(start, explicit, home string) (string, error) {
+	dir, err := Find(start, explicit)
+	if err == nil || explicit != "" || home == "" || !errors.Is(err, ErrNotFound) {
+		return dir, err
+	}
+	g := GlobalDir(home)
+	if st, serr := os.Stat(ConfigPath(g)); serr == nil && !st.IsDir() {
+		return g, nil
+	}
+	return "", err
 }
 
 // Init creates the directory, an empty config (0600) and .gitignore. It never

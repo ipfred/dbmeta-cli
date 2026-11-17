@@ -171,14 +171,24 @@ func resolveSkillDirs(env *Env, scope, target, dir string) ([]skillDir, error) {
 	return out, nil
 }
 
-// projectRoot is the parent of .dbmeta/, or the working directory when there is none.
+// projectRoot is the parent of .dbmeta/, or the working directory when there is
+// none. The per-user ~/.dbmeta is not a project, so it does not count.
 func projectRoot(env *Env) (string, error) {
 	cwd, err := env.Getwd()
 	if err != nil {
 		return "", err
 	}
 	if dir, err := config.Find(cwd, env.Getenv(config.EnvDir)); err == nil {
+		if home, herr := env.HomeDir(); herr == nil && sameDir(dir, config.GlobalDir(home)) {
+			return cwd, nil
+		}
 		return filepath.Dir(dir), nil
 	}
 	return cwd, nil
+}
+
+func sameDir(a, b string) bool {
+	sa, err1 := os.Stat(a)
+	sb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(sa, sb)
 }

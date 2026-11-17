@@ -61,7 +61,7 @@ dbmeta-cli instance add <名称> --jdbc "<jdbc 链接>" --env <prod|test|...> --
 
 - 如果 JDBC 链接里带了密码,先把密码去掉再传入,也不要在对话里复述密码。
 - 完成后告诉用户:去 `.dbmeta/config.json` 里自己填写 `password`,填好后运行 `dbmeta-cli db sync <名称>` 登记这个实例里的库。
-- `.dbmeta/` 不存在时会自动创建。也可以让用户先运行 `dbmeta-cli init`。
+- 找不到任何 `.dbmeta/` 时会在当前目录自动创建。想让所有项目共用,让用户先运行 `dbmeta-cli init --scope global`。
 - 如需限制可访问的库,加 `--allow-db a,b`。
 
 ## 5. 失败时怎么办
@@ -70,7 +70,7 @@ dbmeta-cli instance add <名称> --jdbc "<jdbc 链接>" --env <prod|test|...> --
 
 | 退出码 | 含义 | 处理 |
 |---|---|---|
-| 2 | 参数、标识符、库、实例或配置错误 | 若提示"未找到 .dbmeta/config.json",让用户运行 `dbmeta-cli init`;"库没有出现在任何实例里"见第 3 节;其余按提示修正 |
+| 2 | 参数、标识符、库、实例或配置错误 | 若提示"未找到 .dbmeta/config.json",让用户运行 `dbmeta-cli init`(只用于当前项目)或 `dbmeta-cli init --scope global`(所有项目共用);"库没有出现在任何实例里"见第 3 节;其余按提示修正 |
 | 3 | 密码为空或认证失败 | 让用户自己编辑 `.dbmeta/config.json` 填写密码。不要向用户索要密码 |
 | 4 | 表不存在,或账号无权限查看 | 请用户确认库名、表名和权限。不要重试,不要猜相似的表名 |
 | 5 | `--cached` 没有缓存 | 去掉 `--cached` 再试,或让用户先配置好密码 |

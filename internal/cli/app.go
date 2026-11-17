@@ -254,13 +254,15 @@ func (p *project) store(env *Env) *cache.Store {
 	return s
 }
 
-// findDir locates .dbmeta/ without reading the config file.
+// findDir locates .dbmeta/ without reading the config file: --dir or
+// DBMETA_DIR, then the nearest .dbmeta/ above the working directory, then ~/.dbmeta.
 func findDir(env *Env, flagVal string) (string, error) {
 	cwd, err := env.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return config.Find(cwd, explicitDir(env, flagVal))
+	home, _ := env.HomeDir() // no home directory just means no global fallback
+	return config.FindWithGlobal(cwd, explicitDir(env, flagVal), home)
 }
 
 func loadProject(env *Env, flagVal string) (*project, error) {

@@ -18,11 +18,10 @@ make dist             # 交叉编译 darwin / linux / windows
 ## 快速开始
 
 ```bash
-cd <你的项目>
-dbmeta-cli init
+dbmeta-cli init --scope global       # 所有项目共用(装在用户目录下);只想用于当前项目就 cd 进去后运行 dbmeta-cli init
 dbmeta-cli instance add order_prod --env prod --desc "订单主库" \
   --jdbc "jdbc:mysql://10.0.0.12:3306/order?user=readonly&useSSL=false"
-# 手动编辑 .dbmeta/config.json,填写 password
+# 手动编辑 config.json(位置见下面"配置发现"),填写 password
 dbmeta-cli instance ping order_prod
 dbmeta-cli db sync order_prod        # 登记这个实例里有哪些库(写入 .dbmeta/routes.json)
 dbmeta-cli table get order.t_order   # 之后只写 库.表,不用再指定实例
@@ -63,7 +62,21 @@ dbmeta-cli table get order.t_order   # 之后只写 库.表,不用再指定实�
 
 字段拼错会直接报错(不接受未知字段)。
 
-**配置发现:** 从当前目录向上找 `.dbmeta/config.json`,也可以用 `--dir` 或环境变量 `DBMETA_DIR` 指定(项目根目录或 `.dbmeta` 目录都行)。
+**配置发现:** 按下面的顺序,用第一个找到的 `.dbmeta/`:
+
+1. `--dir` 或环境变量 `DBMETA_DIR`(项目根目录或 `.dbmeta` 目录都行)。指定了就只看它,找不到不会再往下回退。
+2. 从当前目录向上找到的第一个 `.dbmeta/config.json`(项目级,类似 git 找 `.git`)。
+3. 用户目录下的 `.dbmeta/`(全局):
+
+   | 系统 | 位置 |
+   |---|---|
+   | Windows | `%USERPROFILE%\.dbmeta`,例如 `C:\Users\pa\.dbmeta` |
+   | macOS | `~/.dbmeta`,例如 `/Users/pa/.dbmeta` |
+   | Linux | `~/.dbmeta` |
+
+   用 `dbmeta-cli init --scope global` 创建。所有自己没有 `.dbmeta/` 的项目共用这一份:实例只登记一次,`routes.json` 和表结构缓存也只有一份。项目里有自己的 `.dbmeta/` 时,项目的完全接管,不和全局合并。
+
+`init` 的位置由 `--scope project|global` 选择,默认 `project`(当前目录)。`instance add` 在找不到任何 `.dbmeta/` 时会在当前目录自动创建项目级的;想用全局的,先运行 `init --scope global`。全局目录里同样含密码:Linux 和 macOS 上 `config.json` 权限为 0600,权限过宽时拒绝读取;Windows 上请确认用户目录只有自己能访问。`skill install --scope project` 不会把全局 `.dbmeta/` 当作项目根。
 
 **缓存:** `.dbmeta/<实例>/<库>/<表>.md`,可直接浏览。缓存只含表结构,团队可以自行决定是否提交;配置不会随 git 共享,每人用 `instance add --jdbc` 各生成一份。实例里确认没有某张表时,会写一个 `<表>.miss` 标记(有效期同 `ttl`),避免每次都重连没有这张表的实例;`--refresh` 会绕过它。
 
@@ -83,7 +96,7 @@ dbmeta-cli table get order.t_order   # 之后只写 库.表,不用再指定实�
 
 | 命令 | 作用 | 连库 |
 |---|---|---|
-| `init` | 创建 `.dbmeta/`、空 `config.json`、`.gitignore` | 否 |
+| `init [--scope project\|global]` | 创建 `.dbmeta/`、空 `config.json`、`.gitignore`;`global` 建在用户目录下 | 否 |
 | `instance add <名称> --jdbc <url>` | 解析 JDBC 链接并登记(密码一律忽略) | 否 |
 | `instance add <名称> --host <h> [--port --user --tls]` | 手动登记 | 否 |
 | `instance list [--json]` | 列出实例,不显示密码 | 否 |
